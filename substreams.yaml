@@ -12,6 +12,14 @@ modules:
   # There would actually exists here a module that only outputs the decoded
   # log events, to avoid working multiple time on the full block.
 
+  - name: store_mint_burn_liquidity
+    kind: store
+    initialBlock: 12376729
+    updatePolicy: add
+    valueType: bigint
+    inputs:
+      - source: sf.ethereum.type.v2.Block
+
   - name: store_swap_liquidity
     kind: store
     initialBlock: 12376729
@@ -20,21 +28,14 @@ modules:
     inputs:
       - source: sf.ethereum.type.v2.Block
 
-  - name: store_liquidity
-    kind: store
-    initialBlock: 12376729
-    updatePolicy: set
-    valueType: bigint
-    inputs:
-      - source: sf.ethereum.type.v2.Block
-      - store: store_swap_liquidity
-        mode: get
-
   - name: map_output
     kind: map
     initialBlock: 12376729
     inputs:
-      - store: store_liquidity
+      - store: store_mint_burn_liquidity
         mode: get
+      - store: store_swap_liquidity
+        mode: get
+
     output:
       type: proto:google.protobuf.Empty

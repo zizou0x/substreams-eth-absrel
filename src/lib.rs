@@ -2,6 +2,8 @@ mod abi;
 
 use substreams::hex;
 use substreams::scalar::BigInt;
+use substreams::store::StoreAdd;
+use substreams::store::StoreAddBigInt;
 use substreams::store::StoreGet;
 use substreams::store::StoreGetBigInt;
 use substreams::store::StoreNew;
@@ -36,23 +38,7 @@ enum PoolEvent {
 }
 
 #[substreams::handlers::store]
-fn store_mint_burn_liquidity(blk: Block, s: StoreSetBigInt) {
-    for event in block_to_events(blk) {
-        if let PoolEvent::Swap {
-            ordinal,
-            amount0,
-            amount1,
-            ..
-        } = event
-        {
-            s.set(ordinal, "amount0", &amount0);
-            s.set(ordinal, "amount1", &amount1);
-        }
-    }
-}
-
-#[substreams::handlers::store]
-fn store_liquidity(blk: Block, swaps: StoreGetBigInt, s: StoreSetBigInt) {
+fn store_mint_burn_liquidity(blk: Block, s: StoreAddBigInt) {
     for event in block_to_events(blk) {
         match event {
             PoolEvent::Mint {
@@ -62,17 +48,8 @@ fn store_liquidity(blk: Block, swaps: StoreGetBigInt, s: StoreSetBigInt) {
                 tx,
             } => {
                 substreams::log::info!("Mint at tx {}", tx);
-
-                s.set(
-                    ordinal,
-                    "amount0",
-                    &(swaps.get_at(ordinal, "amount0").unwrap_or_default() + amount0),
-                );
-                s.set(
-                    ordinal,
-                    "amount1",
-                    &(swaps.get_at(ordinal, "amount1").unwrap_or_default() + amount1),
-                );
+                s.add(ordinal, "amount0", &amount0);
+                s.add(ordinal, "amount1", &amount1);
             }
             PoolEvent::Burn {
                 ordinal,
@@ -80,39 +57,46 @@ fn store_liquidity(blk: Block, swaps: StoreGetBigInt, s: StoreSetBigInt) {
                 amount1,
                 tx,
             } => {
-                substreams::log::info!(
-                    "Burn at tx {} at ordinal {} (amount0 {}, amount1 {})",
-                    tx,
-                    ordinal,
-                    swaps.get_at(ordinal, "amount0").unwrap_or_default(),
-                    swaps.get_at(ordinal, "amount1").unwrap_or_default(),
-                );
-
-                s.set(
-                    ordinal,
-                    "amount0",
-                    &(swaps.get_at(ordinal, "amount0").unwrap_or_default() - amount0),
-                );
-                s.set(
-                    ordinal,
-                    "amount1",
-                    &(swaps.get_at(ordinal, "amount1").unwrap_or_default() - amount1),
-                );
+                substreams::log::info!("Burn at tx {}", tx);
+                s.add(ordinal, "amount0", &amount0.neg());
+                s.add(ordinal, "amount1", &amount1.neg());
             }
-            PoolEvent::Swap { tx, .. } => {
-                substreams::log::info!("Swap at tx {}", tx);
-                // Skipping, already handled through deltas
+            PoolEvent::Swap { .. } => {
+                // No swap for now
             }
         }
     }
 }
 
+#[substreams::handlers::store]
+fn store_swap_liquidity(blk: Block, s: StoreSetBigInt) {
+    for event in block_to_events(blk) {
+        if let PoolEvent::Swap {
+            ordinal,
+            amount0,
+            amount1,
+            tx,
+        } = event
+        {
+            substreams::log::info!("Swap at tx {}", tx);
+            s.set(ordinal, "amount0", &amount0);
+            s.set(ordinal, "amount1", &amount1);
+        }
+    }
+}
+
 #[substreams::handlers::map]
-fn map_output(liquidity: StoreGetBigInt) -> Option<()> {
+fn map_output(mint_burn: StoreGetBigInt, swap: StoreGetBigInt) -> Option<()> {
+    let mint_burn_last_0 = mint_burn.get_last("amount0").unwrap_or_default();
+    let swap_last_0 = swap.get_last("amount0").unwrap_or_default();
+
+    let mint_burn_last_1 = mint_burn.get_last("amount1").unwrap_or_default();
+    let swap_last_1 = swap.get_last("amount1").unwrap_or_default();
+
     substreams::log::info!(
         "Amount0 at end of block: {}\nAmount1 at end of block: {}",
-        liquidity.get_last("amount0").unwrap_or_default(),
-        liquidity.get_last("amount1").unwrap_or_default()
+        (swap_last_0 + mint_burn_last_0),
+        (swap_last_1 + mint_burn_last_1),
     );
 
     Some(())
