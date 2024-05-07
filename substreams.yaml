@@ -1,0 +1,40 @@
+specVersion: v0.1.0
+package:
+  name: "substreams_eth_rpc_batch"
+  version: v0.0.1
+
+binaries:
+  default:
+    type: wasm/rust-v1
+    file: ./target/wasm32-unknown-unknown/release/substreams.wasm
+
+modules:
+  # There would actually exists here a module that only outputs the decoded
+  # log events, to avoid working multiple time on the full block.
+
+  - name: store_swap_liquidity
+    kind: store
+    initialBlock: 12376729
+    updatePolicy: set
+    valueType: bigint
+    inputs:
+      - source: sf.ethereum.type.v2.Block
+
+  - name: store_liquidity
+    kind: store
+    initialBlock: 12376729
+    updatePolicy: set
+    valueType: bigint
+    inputs:
+      - source: sf.ethereum.type.v2.Block
+      - store: store_swap_liquidity
+        mode: get
+
+  - name: map_output
+    kind: map
+    initialBlock: 12376729
+    inputs:
+      - store: store_liquidity
+        mode: get
+    output:
+      type: proto:google.protobuf.Empty
