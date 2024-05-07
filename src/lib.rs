@@ -19,51 +19,77 @@ const WETH_USDC_POOL_ADDR: [u8; 20] = hex!("88e6a0c2ddd26feeb64f039a2c41296fcb3f
 enum PoolEvent {
     Mint {
         ordinal: u64,
-        amount0: BigInt,
-        amount1: BigInt,
+        amount: BigInt,
+        tick_lower: BigInt,
+        tick_upper: BigInt,
         tx: String,
     },
     Burn {
         ordinal: u64,
-        amount0: BigInt,
-        amount1: BigInt,
+        amount: BigInt,
+        tick_lower: BigInt,
+        tick_upper: BigInt,
         tx: String,
     },
     Swap {
         ordinal: u64,
-        amount0: BigInt,
-        amount1: BigInt,
+        liquidity: BigInt,
+        tick: BigInt,
         tx: String,
+    },
+    Initialize {
+        ordinal: u64,
+        tick: BigInt,
     },
 }
 
 #[substreams::handlers::store]
-fn store_mint_burn_liquidity(blk: Block, s: StoreAddBigInt) {
+fn store_pool_current_tick(blk: Block, s: StoreSetBigInt) {
+    for event in block_to_events(blk) {
+        match event {
+            PoolEvent::Swap { ordinal, tick, .. } => {
+                s.set(ordinal, "tick", &tick);
+            }
+            PoolEvent::Initialize { ordinal, tick, .. } => {
+                s.set(ordinal, "tick", &tick);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[substreams::handlers::store]
+fn store_mint_burn_liquidity(blk: Block, tick_store: StoreGetBigInt, s: StoreAddBigInt) {
     for event in block_to_events(blk) {
         match event {
             PoolEvent::Mint {
                 ordinal,
-                amount0,
-                amount1,
+                amount,
+                tick_lower,
+                tick_upper,
                 tx,
             } => {
                 substreams::log::info!("Mint at tx {}", tx);
-                s.add(ordinal, "amount0", &amount0);
-                s.add(ordinal, "amount1", &amount1);
+                let current_tick = tick_store.get_last("tick").unwrap_or(BigInt::zero());
+                if current_tick > tick_lower && current_tick < tick_upper {
+                    s.add(ordinal, "liquidity", &amount);
+                }
             }
             PoolEvent::Burn {
                 ordinal,
-                amount0,
-                amount1,
+                amount,
+                tick_lower,
+                tick_upper,
                 tx,
             } => {
                 substreams::log::info!("Burn at tx {}", tx);
-                s.add(ordinal, "amount0", &amount0.neg());
-                s.add(ordinal, "amount1", &amount1.neg());
+                let current_tick = tick_store.get_last("tick").unwrap_or(BigInt::zero());
+
+                if current_tick > tick_lower && current_tick < tick_upper {
+                    s.add(ordinal, "liquidity", &amount.neg());
+                }
             }
-            PoolEvent::Swap { .. } => {
-                // No swap for now
-            }
+            _ => {}
         }
     }
 }
@@ -73,37 +99,32 @@ fn store_swap_liquidity(blk: Block, s: StoreSetBigInt) {
     for event in block_to_events(blk) {
         if let PoolEvent::Swap {
             ordinal,
-            amount0,
-            amount1,
+            liquidity,
             tx,
+            ..
         } = event
         {
             substreams::log::info!("Swap at tx {}", tx);
-            s.set(ordinal, "amount0", &amount0);
-            s.set(ordinal, "amount1", &amount1);
+            s.set(ordinal, "liquidity", &liquidity);
         }
     }
 }
 
 #[substreams::handlers::map]
 fn map_output(mint_burn: StoreGetBigInt, swap: StoreGetBigInt) -> Option<()> {
-    let mint_burn_last_0 = mint_burn.get_last("amount0").unwrap_or_default();
-    let swap_last_0 = swap.get_last("amount0").unwrap_or_default();
-
-    let mint_burn_last_1 = mint_burn.get_last("amount1").unwrap_or_default();
-    let swap_last_1 = swap.get_last("amount1").unwrap_or_default();
+    let mint_burn_last = mint_burn.get_last("liquidity").unwrap_or_default();
+    let swap_last = swap.get_last("liquidity").unwrap_or_default();
 
     substreams::log::info!(
-        "Amount0 at end of block: {}\nAmount1 at end of block: {}",
-        (swap_last_0 + mint_burn_last_0),
-        (swap_last_1 + mint_burn_last_1),
+        "Liquidity at end of block: {}",
+        (swap_last + mint_burn_last),
     );
 
     Some(())
 }
 
 fn block_to_events(blk: Block) -> Vec<PoolEvent> {
-    use abi::pool::events::{Burn, Mint, Swap};
+    use abi::pool::events::{Burn, Initialize, Mint, Swap};
 
     let events = blk
         .logs()
@@ -115,23 +136,30 @@ fn block_to_events(blk: Block) -> Vec<PoolEvent> {
             if let Some(mint) = Mint::match_and_decode(log_view.log) {
                 Some(PoolEvent::Mint {
                     ordinal: log_view.ordinal(),
-                    amount0: mint.amount0,
-                    amount1: mint.amount1,
+                    amount: mint.amount,
+                    tick_lower: mint.tick_lower,
+                    tick_upper: mint.tick_upper,
                     tx: Hex(&log_view.receipt.transaction.hash).to_string(),
                 })
             } else if let Some(burn) = Burn::match_and_decode(log_view.log) {
                 Some(PoolEvent::Burn {
                     ordinal: log_view.ordinal(),
-                    amount0: burn.amount0,
-                    amount1: burn.amount1,
+                    amount: burn.amount,
+                    tick_lower: burn.tick_lower,
+                    tick_upper: burn.tick_upper,
                     tx: Hex(&log_view.receipt.transaction.hash).to_string(),
                 })
             } else if let Some(swap) = Swap::match_and_decode(log_view.log) {
                 Some(PoolEvent::Swap {
                     ordinal: log_view.ordinal(),
-                    amount0: swap.amount0,
-                    amount1: swap.amount1,
+                    liquidity: swap.liquidity,
+                    tick: swap.tick,
                     tx: Hex(&log_view.receipt.transaction.hash).to_string(),
+                })
+            } else if let Some(init) = Initialize::match_and_decode(log_view.log) {
+                Some(PoolEvent::Initialize {
+                    ordinal: log_view.ordinal(),
+                    tick: init.tick,
                 })
             } else {
                 None

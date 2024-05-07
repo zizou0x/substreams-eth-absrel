@@ -12,6 +12,14 @@ modules:
   # There would actually exists here a module that only outputs the decoded
   # log events, to avoid working multiple time on the full block.
 
+  - name: store_pool_current_tick
+    kind: store
+    initialBlock: 12376729
+    updatePolicy: set
+    valueType: bigint
+    inputs:
+      - source: sf.ethereum.type.v2.Block
+
   - name: store_mint_burn_liquidity
     kind: store
     initialBlock: 12376729
@@ -19,6 +27,8 @@ modules:
     valueType: bigint
     inputs:
       - source: sf.ethereum.type.v2.Block
+      - store: store_pool_current_tick
+        mode: get
 
   - name: store_swap_liquidity
     kind: store
